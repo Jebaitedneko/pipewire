@@ -31,33 +31,93 @@ struct impl {
 	int max_bitpool;
 };
 
+int get_custom_config(int idx) {
+#define MAX_LINE_LENGTH 256
+#define MAX_DATA_LENGTH 10
+#define NUM_KEYS 5
+  FILE *file = NULL;
+  char *home, *conf_val_str = {'\0'};
+  char path[MAX_LINE_LENGTH], line[MAX_LINE_LENGTH] = {'\0'};
+  static const char *conf_keys[] = {
+    "SAMPLING_FREQUENCY=", "CHANNEL_MODE=", "BLOCK_LENGTH=", "SUBBANDS=",
+    "BITPOOL="
+  };
+  int conf_val = 0;
+
+  if (idx < 0 || idx >= NUM_KEYS)
+    goto exit;
+
+  home = getenv("HOME");
+  if (home == NULL)
+    goto exit;
+
+  snprintf(path, sizeof(path), "%s/.bluezrc", home);
+
+  file = fopen(path, "r");
+  if (file == NULL)
+    goto exit;
+
+  conf_val_str = malloc(MAX_DATA_LENGTH + 1);
+  if (conf_val_str == NULL)
+    goto exit;
+
+  while (fgets(line, sizeof(line), file)) {
+    if (strncmp(line, conf_keys[idx], strlen(conf_keys[idx])) == 0) {
+      strncpy(conf_val_str, line + strlen(conf_keys[idx]), MAX_DATA_LENGTH);
+      conf_val_str[MAX_DATA_LENGTH] = '\0';
+      conf_val = atoi(conf_val_str);
+      break;
+    }
+  }
+
+exit:
+  if (file != NULL)
+    fclose(file);
+
+  if (conf_val_str != NULL)
+    free(conf_val_str);
+
+  return conf_val;
+}
+
 static int codec_fill_caps(const struct media_codec *codec, uint32_t flags,
 		uint8_t caps[A2DP_MAX_CAPS_SIZE])
 {
-	static const a2dp_sbc_t a2dp_sbc = {
+	int custom_sampling_frequency = get_custom_config(0);
+	int custom_channel_mode = get_custom_config(1);
+	int custom_block_length = get_custom_config(2);
+	int custom_subbands = get_custom_config(3);
+	int custom_bitpool = get_custom_config(4);
+	a2dp_sbc_t a2dp_sbc = {
 		.frequency =
+			(custom_sampling_frequency > 0) ? custom_sampling_frequency :
 			SBC_SAMPLING_FREQ_16000 |
 			SBC_SAMPLING_FREQ_32000 |
 			SBC_SAMPLING_FREQ_44100 |
 			SBC_SAMPLING_FREQ_48000,
 		.channel_mode =
+			(custom_channel_mode > 0) ? custom_channel_mode :
 			SBC_CHANNEL_MODE_MONO |
 			SBC_CHANNEL_MODE_DUAL_CHANNEL |
 			SBC_CHANNEL_MODE_STEREO |
 			SBC_CHANNEL_MODE_JOINT_STEREO,
 		.block_length =
+			(custom_block_length > 0) ? custom_block_length :
 			SBC_BLOCK_LENGTH_4 |
 			SBC_BLOCK_LENGTH_8 |
 			SBC_BLOCK_LENGTH_12 |
 			SBC_BLOCK_LENGTH_16,
 		.subbands =
+			(custom_subbands > 0) ? custom_subbands :
 			SBC_SUBBANDS_4 |
 			SBC_SUBBANDS_8,
 		.allocation_method =
 			SBC_ALLOCATION_SNR |
 			SBC_ALLOCATION_LOUDNESS,
-		.min_bitpool = SBC_MIN_BITPOOL,
-		.max_bitpool = SBC_MAX_BITPOOL,
+		.min_bitpool = (custom_bitpool > 0) ? custom_bitpool :
+			SBC_MIN_BITPOOL,
+		.max_bitpool = (custom_bitpool > 0) ? custom_bitpool :
+			SBC_MAX_BITPOOL,
 	};
 
 	memcpy(caps, &a2dp_sbc, sizeof(a2dp_sbc));
@@ -66,6 +126,11 @@ static int codec_fill_caps(const struct media_codec *codec, uint32_t flags,
 
 static uint8_t default_bitpool(uint8_t freq, uint8_t mode, bool xq)
 {
+	int custom_bitpool = get_custom_config(4);
+
+	if (custom_bitpool > 0)
+		return custom_bitpool;
+
 	/* A2DP spec v1.2 states that all SNK implementation shall handle bitrates
 	 * of up to 512 kbps (~ bitpool = 86 stereo, or 2x43 dual channel at 44.1KHz
 	 * or ~ bitpool = 78 stereo, or 2x39 dual channel at 48KHz). */
@@ -135,6 +200,11 @@ static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		const struct media_codec_audio_info *info,
 		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE])
 {
+	int custom_sampling_frequency = get_custom_config(0);
+	int custom_channel_mode = get_custom_config(1);
+	int custom_block_length = get_custom_config(2);
+	int custom_subbands = get_custom_config(3);
+	int custom_bitpool = get_custom_config(4);
 	a2dp_sbc_t conf;
 	int bitpool, i;
 	size_t n;
@@ -156,11 +226,18 @@ static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		configs = sbc_frequencies;
 		n = SPA_N_ELEMENTS(sbc_frequencies);
 	}
+
+	if (custom_sampling_frequency > 0)
+		conf.frequency = custom_sampling_frequency;
+
 	if ((i = media_codec_select_config(configs, n, conf.frequency,
 					  info ? info->rate : A2DP_CODEC_DEFAULT_RATE
 					  )) < 0)
 		return -ENOTSUP;
 	conf.frequency = configs[i].config;
+
+	if (custom_sampling_frequency > 0)
+		conf.frequency = custom_sampling_frequency;
 
 	if (xq) {
 		configs = sbc_xq_channel_modes;
@@ -169,11 +246,21 @@ static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		configs = sbc_channel_modes;
 		n = SPA_N_ELEMENTS(sbc_channel_modes);
 	}
+
+	if (custom_channel_mode > 0)
+		conf.channel_mode = custom_channel_mode;
+
 	if ((i = media_codec_select_config(configs, n, conf.channel_mode,
 					  info ? info->channels : A2DP_CODEC_DEFAULT_CHANNELS
 					  )) < 0)
 		return -ENOTSUP;
 	conf.channel_mode = configs[i].config;
+
+	if (custom_channel_mode > 0)
+		conf.channel_mode = custom_channel_mode;
+
+	if (custom_block_length > 0)
+		conf.block_length = custom_block_length;
 
 	if (conf.block_length & SBC_BLOCK_LENGTH_16)
 		conf.block_length = SBC_BLOCK_LENGTH_16;
@@ -185,6 +272,9 @@ static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		conf.block_length = SBC_BLOCK_LENGTH_4;
 	else
 		return -ENOTSUP;
+
+	if (custom_subbands > 0)
+		conf.subbands = custom_subbands;
 
 	if (conf.subbands & SBC_SUBBANDS_8)
 		conf.subbands = SBC_SUBBANDS_8;
@@ -204,6 +294,10 @@ static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 
 	conf.min_bitpool = SPA_MAX(SBC_MIN_BITPOOL, conf.min_bitpool);
 	conf.max_bitpool = SPA_MIN(bitpool, conf.max_bitpool);
+
+	if (custom_bitpool > 0)
+		conf.min_bitpool = conf.max_bitpool = custom_bitpool;
+
 	memcpy(config, &conf, sizeof(conf));
 
 	return sizeof(conf);
@@ -326,6 +420,7 @@ static int codec_validate_config(const struct media_codec *codec, uint32_t flags
 
 static int codec_set_bitpool(struct impl *this, int bitpool)
 {
+	int custom_bitpool = get_custom_config(4);
 	size_t rtp_size = sizeof(struct rtp_header) + sizeof(struct rtp_payload);
 
 	this->sbc.bitpool = SPA_CLAMP(bitpool, this->min_bitpool, this->max_bitpool);
@@ -333,6 +428,10 @@ static int codec_set_bitpool(struct impl *this, int bitpool)
 	this->max_frames = (this->mtu - rtp_size) / sbc_get_frame_length(&this->sbc);
 	if (this->max_frames > 15)
 		this->max_frames = 15;
+
+	if (custom_bitpool > 0)
+		this->sbc.bitpool = custom_bitpool;
+
 	return this->sbc.bitpool;
 }
 
